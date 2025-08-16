@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Сравнение моделей батарей</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+      .model-img { max-height: 220px; object-fit: contain; }
+      .hidden { display:none !important; }
+      pre#compareResult { white-space: pre-wrap; word-break: break-word; }
+      .table-success { background-color: #d4edda !important; }
+      .table-warning { background-color: #fff3cd !important; }
+      .small-note { font-size: 0.9rem; color: #6c757d; }
+    </style>
+</head>
+<body>
+<div class="container my-4">
+    <h1 class="text-center mb-4">Сравнение моделей батарей</h1>
+
+    <!-- Форма для ввода данных -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title">Введите данные батареи</h5>
+            <form id="compareForm">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label for="Voltage_measured" class="form-label">Напряжение (Voltage_measured)</label>
+                        <input type="number" step="any" class="form-control" id="Voltage_measured" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label for="Current_measured" class="form-label">Ток (Current_measured)</label>
+                        <input type="number" step="any" class="form-control" id="Current_measured" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label for="Temperature_measured" class="form-label">Температура (Temperature_measured)</label>
+                        <input type="number" step="any" class="form-control" id="Temperature_measured" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="Current_load" class="form-label">Ток нагрузки (Current_load)</label>
+                        <input type="number" step="any" class="form-control" id="Current_load" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="Voltage_load" class="form-label">Нагруженное напряжение (Voltage_load)</label>
+                        <input type="number" step="any" class="form-control" id="Voltage_load" required>
+                    </div>
+                </div>
+                <div class="mt-3 d-flex gap-2">
+                    <button type="submit" class="btn btn-primary">Сравнить</button>
+                    <button type="button" id="refreshPlotsBtn" class="btn btn-outline-secondary">Обновить графики</button>
+                    <a href="/compare" class="btn btn-outline-info">Перейти к полной странице сравнения</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ====== Блок результатов (верх, таблично) ====== -->
+    <div class="card mb-4" id="compareResultCard" style="display: none;">
+      <div class="card-body">
+        <h5 class="card-title">Результаты сравнения</h5>
+
+        <div class="table-responsive">
+          <table class="table table-bordered table-hover" id="resultsTable">
+            <thead class="table-light">
+              <tr>
+                <th style="width:48px;">#</th>
+                <th>Модель</th>
+                <th style="width:180px; text-align:right;">Остаток емкости (%)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- сюда вставит JS -->
+            </tbody>
+          </table>
+        </div>
+
+        <div class="mt-2 d-flex gap-2">
+          <a id="goToComparePage" href="/compare" class="btn btn-primary">Посмотреть детально</a>
+          <button id="copyResultsBtn" class="btn btn-outline-secondary">Копировать в буфер</button>
+          <button id="closeResultsBtn" class="btn btn-outline-danger">Скрыть</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Таблица с метриками и карточки с графиками -->
+    <div id="plotsArea">
+      <div class="card mb-4">
+        <div class="card-body">
+          <h5 class="card-title">Результаты моделей</h5>
+          <div id="metricsHelp" class="text-muted mb-2 small-note">Загружаю метрики и графики из папки <code>plots/</code>...</div>
+
+          <!-- Таблица метрик -->
+          <div class="table-responsive">
+            <table class="table table-striped" id="metricsTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Модель</th>
+                  <th>MAE</th>
+                  <th>R²</th>
+                  <th>График</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Плитка с картинками -->
+      <div class="row" id="plotsContainer"></div>
+    </div>
+</div>
+
+<script>
+/* ------------------------------------------------------------
+   UI + загрузка графиков и метрик
+   - ищем базовую папку (кандидаты: /plots, /static/plots, /static, /)
+   - если есть metrics.json — используем его для таблицы и карточек
+   - иначе пытаемся подгрузить картинки по KNOWN_MODELS
+------------------------------------------------------------ */
+
+const KNOWN_MODELS = ["GradientBoosting","XGBoost","LightGBM","CatBoost","RandomForest"];
+const CANDIDATE_BASES = ["/plots", "/static/plots", "/static", "/"];
+
+async function findWorkingBase() {
+  for (const base of CANDIDATE_BASES) {
+    const url = base.endsWith("/") ? base + "metrics.json" : base + "/metrics.json";
+    try {
+      const resp = await fetch(url, {method:"GET"});
+      if (resp.ok) return base.replace(/\/$/, "");
+    } catch (e) {}
+  }
+  // если metrics.json не найден, проверим на картинку
+  for (const base of CANDIDATE_BASES) {
+    const testUrl = (base.replace(/\/$/, "") + "/plot_GradientBoosting.png");
+    try {
+      const r = await fetch(testUrl, {method:"HEAD"});
+      if (r.ok) return base.replace(/\/$/, "");
+    } catch (e) {}
+  }
+  return null;
+}
+
+async function loadMetricsAndPlots() {
+  const help = document.getElementById("metricsHelp");
+  help.textContent = "Ищу графики и метрики в папке plots...";
+
+  const base = await findWorkingBase();
+  if (!base) {
+    help.textContent = "Графики/metrics.json не найдены в ожидаемых местах. Убедись, что папка plots доступна как /plots или /static/plots.";
+    return;
+  }
+
+  help.textContent = `Использую базу: ${base}/`;
+
+  // пробуем получить metrics.json
+  let metrics = null;
+  try {
+    const metricsUrl = base + "/metrics.json";
+    const mresp = await fetch(metricsUrl);
+    if (mresp.ok) metrics = await mresp.json();
+  } catch (e) { metrics = null; }
+
+  const tbody = document.querySelector("#metricsTable tbody");
+  tbody.innerHTML = "";
+  const plotsContainer = document.getElementById("plotsContainer");
+  plotsContainer.innerHTML = "";
+
+  if (metrics && Array.isArray(metrics.models)) {
+    const models = metrics.models;
+    models.sort((a,b) => (a.MAE ?? a.mae ?? 0) - (b.MAE ?? b.mae ?? 0));
+
+    models.forEach((m, idx) => {
+      const name = m.name;
+      const mae = (m.MAE ?? m.mae ?? "-");
+      const r2  = (m.R2 ?? m.r2 ?? "-");
+
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${idx+1}</td><td>${name}</td><td>${mae}</td><td>${r2}</td><td id="cell-${name}">Загрузка...</td>`;
+      tbody.appendChild(tr);
+
+      const col = document.createElement("div");
+      col.className = "col-md-6 col-lg-4 mb-4";
+      col.innerHTML = `
+        <div class="card h-100">
+          <div class="card-body text-center">
+            <h5 class="card-title">${name}</h5>
+            <img id="img-${name}" src="${base}/plot_${name}.png" alt="${name}" class="img-fluid model-img">
+            <div class="mt-2"><a href="${base}/plot_${name}.png" target="_blank" class="btn btn-sm btn-outline-secondary">Открыть</a></div>
+          </div>
+        </div>
+      `;
+      plotsContainer.appendChild(col);
+
+      const img = col.querySelector(`#img-${name}`);
+      img.onerror = () => {
+        const cell = document.getElementById(`cell-${name}`);
+        if (cell) cell.textContent = "График не найден";
+        img.classList.add("hidden");
+      };
+      img.onload = () => {
+        const cellElem = document.getElementById(`cell-${name}`);
+        if (cellElem) cellElem.innerHTML = `<a href="${base}/plot_${name}.png" target="_blank" class="btn btn-sm btn-outline-primary">Посмотреть</a>`;
+      };
+    });
+
+  } else {
+    // metrics.json не найден — пробуем известные модели
+    KNOWN_MODELS.forEach((name, idx) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${idx+1}</td><td>${name}</td><td>—</td><td>—</td><td id="cell-${name}">Загрузка...</td>`;
+      tbody.appendChild(tr);
+
+      const col = document.createElement("div");
+      col.className = "col-md-6 col-lg-4 mb-4";
+      col.innerHTML = `
+        <div class="card h-100">
+          <div class="card-body text-center">
+            <h5 class="card-title">${name}</h5>
+            <img id="img-${name}" src="${base}/plot_${name}.png" alt="${name}" class="img-fluid model-img">
+            <div class="mt-2"><a href="${base}/plot_${name}.png" target="_blank" class="btn btn-sm btn-outline-secondary">Открыть</a></div>
+          </div>
+        </div>
+      `;
+      plotsContainer.appendChild(col);
+
+      const img = col.querySelector(`#img-${name}`);
+      img.onerror = () => {
+        const cell = document.getElementById(`cell-${name}`);
+        if (cell) cell.textContent = "График не найден";
+        img.classList.add("hidden");
+      };
+      img.onload = () => {
+        const cellElem = document.getElementById(`cell-${name}`);
+        if (cellElem) cellElem.innerHTML = `<a href="${base}/plot_${name}.png" target="_blank" class="btn btn-sm btn-outline-primary">Посмотреть</a>`;
+      };
+    });
+  }
+
+  help.textContent = "Графики загружены (если были найдены). Нажми 'Обновить графики' после перегенерации.";
+}
+
+/* ------------------------------------------------------------
+   Рендер результатов /predict красивой таблицей
+------------------------------------------------------------ */
+function renderPredictionsTable(predictions) {
+  const tbody = document.querySelector("#resultsTable tbody");
+  tbody.innerHTML = "";
+
+  const entries = Object.entries(predictions || {});
+  if (entries.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="3" class="text-center text-muted">Нет данных для отображения</td></tr>`;
+    return;
+  }
+
+  // сортируем по убыванию процентов (лучшее сверху)
+  entries.sort((a, b) => b[1] - a[1]);
+
+  entries.forEach(([name, val], idx) => {
+    const num = typeof val === "string" ? parseFloat(val) : Number(val);
+    const display = Number.isFinite(num) ? num.toFixed(2) + " %" : String(val);
+
+    const tr = document.createElement("tr");
+    if (idx === 0) tr.classList.add("table-success");
+    else if (idx === 1) tr.classList.add("table-warning");
+
+    tr.innerHTML = `
+      <td class="align-middle">${idx + 1}</td>
+      <td class="align-middle">${name}</td>
+      <td class="align-middle text-end"><strong>${display}</strong></td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  // показать блок результатов и проскроллить
+  const card = document.getElementById("compareResultCard");
+  card.style.display = "block";
+  card.scrollIntoView({behavior: "smooth", block: "center"});
+}
+
+/* ------------------------------------------------------------
+   Handlers: submit формы, копирование, закрытие, обновление
+------------------------------------------------------------ */
+document.getElementById("compareForm").addEventListener("submit", async function(e) {
+    e.preventDefault();
+
+    const payload = {
+        Voltage_measured: parseFloat(document.getElementById("Voltage_measured").value),
+        Current_measured: parseFloat(document.getElementById("Current_measured").value),
+        Temperature_measured: parseFloat(document.getElementById("Temperature_measured").value),
+        Current_load: parseFloat(document.getElementById("Current_load").value),
+        Voltage_load: parseFloat(document.getElementById("Voltage_load").value)
+    };
+
+    try {
+        const resp = await fetch("/predict", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(payload)
+        });
+
+        if (!resp.ok) {
+            const txt = await resp.text();
+            alert("Ошибка при вызове /predict: " + txt);
+            return;
+        }
+
+        const data = await resp.json();
+        const preds = data.predictions || data;
+
+        // Сохраняем в sessionStorage (в виде JSON)
+        sessionStorage.setItem("predictions", JSON.stringify(preds));
+
+        // Рендерим таблицу (красиво)
+        renderPredictionsTable(preds);
+
+    } catch (err) {
+        console.error(err);
+        alert("Сетевая ошибка: " + err.message);
+    }
+});
+
+document.addEventListener("click", function(e) {
+  if (e.target && e.target.id === "copyResultsBtn") {
+    const raw = sessionStorage.getItem("predictions");
+    if (!raw) return alert("Нет результатов для копирования");
+    navigator.clipboard.writeText(raw).then(() => alert("Результаты скопированы в буфер"));
+  }
+  if (e.target && e.target.id === "closeResultsBtn") {
+    document.getElementById("compareResultCard").style.display = "none";
+  }
+});
+
+// Кнопка "Обновить графики"
+document.getElementById("refreshPlotsBtn").addEventListener("click", async function() {
+  this.disabled = true;
+  this.textContent = "Обновляю...";
+  await loadMetricsAndPlots();
+  this.disabled = false;
+  this.textContent = "Обновить графики";
+});
+
+// автозагрузка при старте
+document.addEventListener("DOMContentLoaded", function() {
+  loadMetricsAndPlots();
+});
+</script>
+
+</body>
+</html>
