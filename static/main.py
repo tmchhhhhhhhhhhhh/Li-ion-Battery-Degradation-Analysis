@@ -13,7 +13,7 @@ app = FastAPI()
 
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent  # папка с main.py
+BASE_DIR = Path(__file__).resolve().parent 
 app.mount("/plots", StaticFiles(directory=BASE_DIR / "plots"), name="plots")
 
 # Монтируем static (css, js, images)
